@@ -1,0 +1,103 @@
+import pandas as pd
+import re
+import ast
+
+# Load data
+df = pd.read_parquet("train-00000-of-00001.parquet")
+
+# ---------------- Regex patterns for different PII types ----------------
+patterns = {
+    "EMAIL": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+    "PHONE_NUMBER": r"\+\d[\d\s\-]{7,}\d",
+    "ZIPCODE": r"\b\d{4,5}\b",
+    "STREET_ADDRESS": r"\d{1,5}\s\w+\s\w+",
+    "ACCOUNT_NUMBER": r"\b\d{8,20}\b",
+    "BANK_ACCOUNT_NUMBER": r"\b\d{8,20}\b",
+    "CREDIT_CARD_NUMBER": r"\b(?:\d[ -]*?){13,16}\b",
+    "CREDIT_CARD_CVV": r"\b\d{3,4}\b",
+    "PIN_NUMBER": r"\b\d{4,6}\b",
+    "PASSPORT_NUMBER": r"\b[A-Z0-9]{5,9}\b",
+    "DRIVER_LICENSE_NUMBER": r"\b[A-Z0-9]{5,15}\b",
+    "CUSTOMER_ID": r"\b[A-Z0-9]{4,15}\b",
+    "EMPLOYEE_ID": r"\b[A-Z0-9]{4,15}\b",
+    "ID_CARD_NUMBER": r"\b[A-Z0-9]{5,15}\b",
+    "IBAN": r"\b[A-Z]{2}\d{2}[A-Z0-9]{1,30}\b",
+    "SWIFT_CODE": r"\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b",
+    "ROUTING_NUMBER": r"\b\d{9}\b",
+    "API_KEY": r"[A-Za-z0-9]{32,40}",
+    "TAX_NUMBER": r"\b\d{8,15}\b"
+}
+
+compiled_patterns = {key: re.compile(pattern) for key, pattern in patterns.items()}
+
+# ---------------- Find matches ----------------
+found_pii = {key: [] for key in patterns.keys()}
+
+# Kun scan source_text for fart
+for value in df["source_text"].astype(str):
+    for pii_type, pattern in compiled_patterns.items():
+        matches = pattern.findall(value)
+        if matches:
+            found_pii[pii_type].extend(matches)
+
+# ---------------- Hent ground truth fra 'privacy' kolonnen ----------------
+true_pii = {}
+
+for row in df["privacy"]:
+    if isinstance(row, str):
+        try:
+            row = ast.literal_eval(row)
+        except (ValueError, SyntaxError):
+            continue
+
+    if hasattr(row, "tolist"):
+        row = row.tolist()
+
+    if not isinstance(row, list):
+        continue
+
+    for item in row:
+        if not isinstance(item, dict):
+            continue
+
+        label = item.get("label")
+        value = str(item.get("value", "")).strip()
+
+        if not label:
+            continue
+
+        if label not in true_pii:
+            true_pii[label] = []
+
+        true_pii[label].append(value)
+
+# ---------------- Beregn recall og dubletter ----------------
+# Print kun labels regex leder efter og som findes i ground truth
+labels_to_report = [key for key in patterns.keys() if key in true_pii]
+
+for key in labels_to_report:
+    predicted_list = found_pii.get(key, [])
+    true_list = true_pii.get(key, [])
+
+    predicted_set = set(predicted_list)
+    true_set = set(true_list)
+
+    # Recall
+    tp = len(predicted_set & true_set)
+    fn = len(true_set - predicted_set)
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+
+    pred_duplicates = len(predicted_list) - len(predicted_set)
+    true_duplicates = len(true_list) - len(true_set)
+
+    print(f"\n--- {key} ---")
+    print("Unique predicted:", len(predicted_set))
+    print("Unique true:", len(true_set))
+    print("True Positives:", tp)
+    print("False Negatives:", fn)
+    print("Recall:", recall)
+    print("Recall (%):", recall * 100)
+    print("Total predicted:", len(predicted_list))
+    print("Predicted duplicates:", pred_duplicates)
+    print("Total true:", len(true_list))
+    print("True duplicates:", true_duplicates) 
